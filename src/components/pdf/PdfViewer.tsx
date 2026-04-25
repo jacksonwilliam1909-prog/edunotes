@@ -336,6 +336,7 @@ export function PdfViewer({
         ctx.strokeStyle = 'rgba(0,0,0,1)'
         ctx.lineWidth = stroke.width * 10
       } else if (stroke.tool === 'highlight') {
+        ctx.globalCompositeOperation = 'multiply'
         ctx.strokeStyle = stroke.color
         ctx.lineWidth = stroke.width * 14
         ctx.globalAlpha = stroke.opacity ?? 0.35
