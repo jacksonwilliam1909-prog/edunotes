@@ -227,7 +227,7 @@ export function PdfToolbar({
             <input
               type="range"
               min={10}
-              max={100}
+              max={50}
               step={5}
               value={Math.round(highlightOpacity * 100)}
               onChange={(e) => onHighlightOpacityChange(Number(e.target.value) / 100)}

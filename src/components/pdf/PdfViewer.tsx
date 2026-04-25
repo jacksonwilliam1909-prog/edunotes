@@ -181,7 +181,7 @@ export function PdfViewer({
   const [penWidth, setPenWidth] = useState(2)
   const [highlightColor, setHighlightColor] = useState('#fbbf24')
   const [highlightOpacity, setHighlightOpacity] = useState(0.35)
-  const [highlightWidth, setHighlightWidth] = useState(1)
+  const [highlightWidth, setHighlightWidth] = useState(0.5)
 
   // Merged PDF support
   const [mergedBlobUrl, setMergedBlobUrl] = useState<string | null>(null)
@@ -336,7 +336,7 @@ export function PdfViewer({
         ctx.strokeStyle = 'rgba(0,0,0,1)'
         ctx.lineWidth = stroke.width * 10
       } else if (stroke.tool === 'highlight') {
-        ctx.globalCompositeOperation = 'multiply'
+        ctx.globalCompositeOperation = 'source-over'
         ctx.strokeStyle = stroke.color
         ctx.lineWidth = stroke.width * 14
         ctx.globalAlpha = stroke.opacity ?? 0.35

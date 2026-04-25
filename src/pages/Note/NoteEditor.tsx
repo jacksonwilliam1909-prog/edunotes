@@ -43,13 +43,23 @@ export function NoteEditorPage() {
   const annotationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pdfInputRef = useRef<HTMLInputElement>(null)
 
-  // Bug 1 fix: track blob URL so we can revoke it when replaced or on unmount
+  // Track blob URL so we can revoke it when replaced or on unmount
   const localBlobUrlRef = useRef<string | null>(null)
 
-  // Bug 2 fix: keep latest title/content in refs so the cleanup useEffect
+  // Keep latest title/content in refs so the cleanup useEffect
   // doesn't capture stale closures from the empty dependency array
   const latestTitleRef = useRef(title)
   const latestContentRef = useRef(content)
+
+  // Prevent the notes-store effect from resetting editor state after the initial load.
+  // Every updateNote call (autosave, annotation save, PDF URL update) triggers the
+  // effect; without this guard the editor content reverts to the last saved version.
+  const contentInitializedRef = useRef(false)
+
+  // Reset content guard when navigating to a different note
+  useEffect(() => {
+    contentInitializedRef.current = false
+  }, [id])
 
   // Load existing note
   useEffect(() => {
@@ -60,11 +70,17 @@ export function NoteEditorPage() {
     const existing = notes.find((n) => n.id === id)
     if (existing) {
       setNote(existing)
-      setTitle(existing.title)
-      setContent(existing.content)
-      latestTitleRef.current = existing.title
-      latestContentRef.current = existing.content
-      if (existing.pdf_url) setLocalPdfUrl(existing.pdf_url)
+      // Only set editor content on the first load — subsequent runs are triggered
+      // by store updates (autosave, annotation save, PDF URL change) and must NOT
+      // overwrite content the user is actively editing.
+      if (!contentInitializedRef.current) {
+        setTitle(existing.title)
+        setContent(existing.content)
+        latestTitleRef.current = existing.title
+        latestContentRef.current = existing.content
+        if (existing.pdf_url) setLocalPdfUrl(existing.pdf_url)
+        contentInitializedRef.current = true
+      }
       setIsInitialized(true)
     } else if (id) {
       supabase
@@ -81,6 +97,7 @@ export function NoteEditorPage() {
           latestTitleRef.current = fetched.title
           latestContentRef.current = fetched.content
           if (fetched.pdf_url) setLocalPdfUrl(fetched.pdf_url)
+          contentInitializedRef.current = true
           setIsInitialized(true)
         })
     }
@@ -157,8 +174,12 @@ export function NoteEditorPage() {
           .upload(path, file, { contentType: 'application/pdf', upsert: true })
         if (uploadError) throw uploadError
         const { data: { publicUrl } } = supabase.storage.from('pdfs').getPublicUrl(path)
-        await updateNote(noteIdRef.current, { pdf_url: publicUrl })
-        setNote((prev) => (prev ? { ...prev, pdf_url: publicUrl } : null))
+        // Append cache-buster so the browser fetches fresh content after upsert
+        const freshUrl = `${publicUrl}?v=${Date.now()}`
+        await updateNote(noteIdRef.current, { pdf_url: freshUrl })
+        setNote((prev) => (prev ? { ...prev, pdf_url: freshUrl } : null))
+        setLocalPdfUrl(freshUrl)
+        toast.success('PDF mesclado salvo')
       } catch (err) {
         console.error(err)
         toast.error('Erro ao salvar PDF mesclado')
