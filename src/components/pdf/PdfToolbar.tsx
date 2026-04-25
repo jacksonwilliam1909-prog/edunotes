@@ -1,10 +1,10 @@
 import {
   MousePointer2, Pen, Highlighter, Eraser, Undo2, Redo2,
-  FilePlus2, Download, FileDown, Loader2, ZoomIn, ZoomOut,
+  FilePlus2, Download, FileDown, Loader2, ZoomIn, ZoomOut, Type,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
-export type PdfTool = 'pointer' | 'pen' | 'highlight' | 'eraser'
+export type PdfTool = 'pointer' | 'pen' | 'highlight' | 'eraser' | 'text'
 
 const PEN_COLORS = [
   { label: 'Azul escuro', value: '#1e3a8a' },
@@ -25,6 +25,14 @@ const HIGHLIGHT_COLORS = [
   { label: 'Vermelho claro', value: '#f87171' },
 ]
 
+const TEXT_COLORS = [
+  { label: 'Preto', value: '#111827' },
+  { label: 'Azul', value: '#1e3a8a' },
+  { label: 'Vermelho', value: '#dc2626' },
+  { label: 'Verde', value: '#16a34a' },
+  { label: 'Roxo', value: '#7c3aed' },
+]
+
 const PEN_WIDTHS = [
   { label: 'Fina', value: 1.5 },
   { label: 'Média', value: 3 },
@@ -35,6 +43,13 @@ const HIGHLIGHT_WIDTHS = [
   { label: 'Fino', value: 0.5 },
   { label: 'Médio', value: 1 },
   { label: 'Grosso', value: 2 },
+]
+
+const TEXT_SIZES = [
+  { label: 'Pequeno', value: 10, display: 'S' },
+  { label: 'Médio', value: 14, display: 'M' },
+  { label: 'Grande', value: 18, display: 'L' },
+  { label: 'Extra grande', value: 24, display: 'XL' },
 ]
 
 interface ToolBtnProps {
@@ -81,6 +96,10 @@ interface PdfToolbarProps {
   onHighlightOpacityChange: (v: number) => void
   highlightWidth: number
   onHighlightWidthChange: (w: number) => void
+  textFontSize: number
+  onTextFontSizeChange: (size: number) => void
+  textColor: string
+  onTextColorChange: (c: string) => void
   onUndo: () => void
   onRedo: () => void
   canUndo: boolean
@@ -107,6 +126,10 @@ export function PdfToolbar({
   onHighlightOpacityChange,
   highlightWidth,
   onHighlightWidthChange,
+  textFontSize,
+  onTextFontSizeChange,
+  textColor,
+  onTextColorChange,
   onUndo,
   onRedo,
   canUndo,
@@ -133,6 +156,9 @@ export function PdfToolbar({
       </ToolBtn>
       <ToolBtn active={activeTool === 'eraser'} onClick={() => onToolChange('eraser')} title="Borracha">
         <Eraser size={18} />
+      </ToolBtn>
+      <ToolBtn active={activeTool === 'text'} onClick={() => onToolChange('text')} title="Caixa de texto">
+        <Type size={18} />
       </ToolBtn>
 
       <Divider />
@@ -241,6 +267,50 @@ export function PdfToolbar({
               }}
             />
           </div>
+          <Divider />
+        </>
+      )}
+
+      {/* Opções da caixa de texto */}
+      {activeTool === 'text' && (
+        <>
+          {TEXT_COLORS.map((c) => (
+            <button
+              key={c.value}
+              title={c.label}
+              onClick={() => onTextColorChange(c.value)}
+              className={cn(
+                'w-6 h-6 rounded-full my-0.5 transition-transform hover:scale-110',
+                textColor === c.value && 'ring-2 ring-offset-1 ring-indigo-500 scale-110',
+              )}
+              style={{ background: c.value }}
+            />
+          ))}
+          <input
+            type="color"
+            value={textColor}
+            onChange={(e) => onTextColorChange(e.target.value)}
+            title="Cor personalizada"
+            className="w-6 h-6 rounded cursor-pointer my-0.5 border border-gray-200"
+            style={{ padding: '1px' }}
+          />
+          <Divider />
+          {/* Tamanho da fonte */}
+          {TEXT_SIZES.map((s) => (
+            <button
+              key={s.value}
+              title={s.label}
+              onClick={() => onTextFontSizeChange(s.value)}
+              className={cn(
+                'w-10 h-8 flex items-center justify-center rounded text-xs font-semibold transition-colors',
+                textFontSize === s.value
+                  ? 'bg-indigo-100 dark:bg-indigo-900 text-indigo-600 dark:text-indigo-400'
+                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800',
+              )}
+            >
+              {s.display}
+            </button>
+          ))}
           <Divider />
         </>
       )}

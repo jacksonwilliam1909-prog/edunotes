@@ -5,7 +5,7 @@ import { PDFDocument } from 'pdf-lib'
 import { toast } from 'sonner'
 import { PdfToolbar } from './PdfToolbar'
 import type { PdfTool } from './PdfToolbar'
-import type { PdfStroke } from '../../types'
+import type { PdfStroke, PdfTextBox, PdfAnnotation } from '../../types'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -31,7 +31,6 @@ function detectShape(
   const distStartEnd = Math.hypot(first[0] - last[0], first[1] - last[1])
   const diagonal = Math.hypot(w, h)
 
-  // Open shapes → straight line
   if (distStartEnd > diagonal * 0.4) return 'line'
 
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2
@@ -40,10 +39,8 @@ function detectShape(
   const variance = dists.reduce((a, b) => a + (b - meanDist) ** 2, 0) / dists.length
   const cv = Math.sqrt(variance) / meanDist
 
-  // Circle: low variance in radial distance + roughly square bounding box
   if (cv < 0.22 && Math.abs(w - h) / Math.max(w, h) < 0.45) return 'circle'
 
-  // Rectangle: points distributed near all 4 edges
   const margin = Math.max(w, h) * 0.2
   const total = points.length
   const nearTop = points.filter((p) => p[1] - minY < margin).length
@@ -81,7 +78,6 @@ function shapeToPoints(
       [minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY], [minX, minY],
     ]
   }
-  // triangle
   return [[cx, minY], [maxX, maxY], [minX, maxY], [cx, minY]]
 }
 
@@ -157,12 +153,158 @@ function annotReducer(s: AnnotState, a: AnnotAction): AnnotState {
   }
 }
 
+// ── TextBoxOverlay ───────────────────────────────────────────────────────────
+
+interface TextBoxOverlayProps {
+  box: PdfTextBox
+  getPageRect: () => DOMRect | null
+  onUpdate: (id: string, updates: Partial<Omit<PdfTextBox, 'id' | 'tool' | 'page'>>) => void
+  onDelete: (id: string) => void
+}
+
+function TextBoxOverlay({ box, getPageRect, onUpdate, onDelete }: TextBoxOverlayProps) {
+  const handleDragStart = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startY = e.clientY
+    const origX = box.x
+    const origY = box.y
+
+    const onMove = (ev: MouseEvent) => {
+      const rect = getPageRect()
+      if (!rect) return
+      const dx = (ev.clientX - startX) / rect.width
+      const dy = (ev.clientY - startY) / rect.height
+      onUpdate(box.id, {
+        x: Math.max(0, Math.min(1 - box.width, origX + dx)),
+        y: Math.max(0, origY + dy),
+      })
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startY = e.clientY
+    const origW = box.width
+    const origH = box.height
+
+    const onMove = (ev: MouseEvent) => {
+      const rect = getPageRect()
+      if (!rect) return
+      const dw = (ev.clientX - startX) / rect.width
+      const dh = (ev.clientY - startY) / rect.height
+      onUpdate(box.id, {
+        width: Math.max(0.08, origW + dw),
+        height: Math.max(0.03, origH + dh),
+      })
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: `${box.x * 100}%`,
+        top: `${box.y * 100}%`,
+        width: `${box.width * 100}%`,
+        minHeight: `${box.height * 100}%`,
+        zIndex: 20,
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Drag handle */}
+      <div
+        style={{ cursor: 'move', userSelect: 'none' }}
+        className="flex items-center justify-between px-1.5 bg-indigo-500 rounded-t"
+        onMouseDown={handleDragStart}
+        title="Arrastar"
+      >
+        <span className="text-white text-[10px] leading-4 pointer-events-none">⠿</span>
+        <button
+          className="text-white/80 hover:text-white text-xs leading-4 font-bold"
+          style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => onDelete(box.id)}
+          title="Excluir caixa"
+        >
+          ×
+        </button>
+      </div>
+
+      {/* Text content */}
+      <div style={{ position: 'relative' }}>
+        <textarea
+          value={box.content}
+          onChange={(e) => onUpdate(box.id, { content: e.target.value })}
+          placeholder="Digite aqui..."
+          style={{
+            width: '100%',
+            minHeight: '36px',
+            resize: 'none',
+            border: '1.5px solid #6366f1',
+            borderTop: 'none',
+            borderRadius: '0 0 4px 4px',
+            outline: 'none',
+            background: 'rgba(255,255,255,0.93)',
+            fontSize: `${box.fontSize}px`,
+            color: box.color,
+            padding: '4px 24px 4px 6px',
+            fontFamily: 'inherit',
+            boxSizing: 'border-box',
+            lineHeight: '1.4',
+          }}
+          rows={2}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        />
+        {/* Resize handle */}
+        <div
+          onMouseDown={handleResizeStart}
+          title="Redimensionar"
+          style={{
+            position: 'absolute',
+            bottom: 2,
+            right: 2,
+            width: 14,
+            height: 14,
+            cursor: 'se-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" style={{ pointerEvents: 'none' }}>
+            <line x1="3" y1="9" x2="9" y2="3" stroke="#6366f1" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="6" y1="9" x2="9" y2="6" stroke="#6366f1" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 interface PdfViewerProps {
   pdfUrl: string
-  initialAnnotations: PdfStroke[]
-  onAnnotationsChange: (annotations: PdfStroke[]) => void
+  initialAnnotations: PdfAnnotation[]
+  onAnnotationsChange: (annotations: PdfAnnotation[]) => void
   onSaveMergedPdf?: (bytes: Uint8Array) => Promise<void>
 }
 
@@ -182,6 +324,8 @@ export function PdfViewer({
   const [highlightColor, setHighlightColor] = useState('#fbbf24')
   const [highlightOpacity, setHighlightOpacity] = useState(0.35)
   const [highlightWidth, setHighlightWidth] = useState(0.5)
+  const [textFontSize, setTextFontSize] = useState(14)
+  const [textColor, setTextColor] = useState('#111827')
 
   // Merged PDF support
   const [mergedBlobUrl, setMergedBlobUrl] = useState<string | null>(null)
@@ -189,37 +333,41 @@ export function PdfViewer({
   const mergedBlobUrlRef = useRef<string | null>(null)
   const mergeInputRef = useRef<HTMLInputElement>(null)
 
-  // The URL actually rendered — merged takes priority over prop
   const effectivePdfUrl = mergedBlobUrl ?? pdfUrl
 
+  const [textBoxes, setTextBoxes] = useState<PdfTextBox[]>(
+    initialAnnotations.filter((a): a is PdfTextBox => a.tool === 'text'),
+  )
+
   const [annot, dispatch] = useReducer(annotReducer, {
-    strokes: initialAnnotations,
+    strokes: initialAnnotations.filter((a): a is PdfStroke => a.tool !== 'text'),
     past: [],
     future: [],
   })
 
   const pdfCanvases = useRef<(HTMLCanvasElement | null)[]>([])
   const annotCanvases = useRef<(HTMLCanvasElement | null)[]>([])
+  const pageRefs = useRef<(HTMLDivElement | null)[]>([])
   const isDrawing = useRef(false)
   const liveStroke = useRef<PdfStroke | null>(null)
-  const latestStrokes = useRef(initialAnnotations)
+  const latestStrokes = useRef(
+    initialAnnotations.filter((a): a is PdfStroke => a.tool !== 'text'),
+  )
 
-  // Shape-correction timer refs
   const straightenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isStraightenedRef = useRef(false)
 
-  // Revoke merged blob URL on unmount
   useEffect(() => {
     return () => {
       if (mergedBlobUrlRef.current) URL.revokeObjectURL(mergedBlobUrlRef.current)
     }
   }, [])
 
-  // Sync annotations to parent and keep latestStrokes up to date
+  // Sync annotations (strokes + text boxes) to parent
   useEffect(() => {
     latestStrokes.current = annot.strokes
-    onAnnotationsChange(annot.strokes)
-  }, [annot.strokes, onAnnotationsChange])
+    onAnnotationsChange([...annot.strokes, ...textBoxes])
+  }, [annot.strokes, textBoxes, onAnnotationsChange])
 
   // ── PDF loading ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -231,9 +379,7 @@ export function PdfViewer({
         setNumPages(doc.numPages)
       }
     })
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [effectivePdfUrl])
 
   // ── Page rendering ───────────────────────────────────────────────────────
@@ -295,7 +441,7 @@ export function PdfViewer({
   }
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>, page: number) => {
-    if (activeTool === 'pointer') return
+    if (activeTool === 'pointer' || activeTool === 'text') return
     const canvas = annotCanvases.current[page - 1]
     if (!canvas) return
 
@@ -323,38 +469,39 @@ export function PdfViewer({
     const pts = liveStroke.current.points
     liveStroke.current = { ...liveStroke.current, points: [...pts, point] }
 
-    // Draw only the last segment incrementally
     if (pts.length >= 1) {
       const stroke = liveStroke.current
-      ctx.save()
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.beginPath()
 
-      if (stroke.tool === 'eraser') {
-        ctx.globalCompositeOperation = 'destination-out'
-        ctx.strokeStyle = 'rgba(0,0,0,1)'
-        ctx.lineWidth = stroke.width * 10
-      } else if (stroke.tool === 'highlight') {
-        ctx.globalCompositeOperation = 'source-over'
-        ctx.strokeStyle = stroke.color
-        ctx.lineWidth = stroke.width * 14
-        ctx.globalAlpha = stroke.opacity ?? 0.35
+      if (stroke.tool === 'highlight') {
+        // Full redraw prevents opacity stacking from incremental overlapping segments
+        redrawPage(canvas, page, latestStrokes.current)
+        drawStroke(ctx, stroke)
       } else {
-        ctx.strokeStyle = stroke.color
-        ctx.lineWidth = stroke.width
-      }
+        ctx.save()
+        ctx.lineCap = 'round'
+        ctx.lineJoin = 'round'
+        ctx.beginPath()
 
-      ctx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1])
-      ctx.lineTo(point[0], point[1])
-      ctx.stroke()
-      ctx.restore()
+        if (stroke.tool === 'eraser') {
+          ctx.globalCompositeOperation = 'destination-out'
+          ctx.strokeStyle = 'rgba(0,0,0,1)'
+          ctx.lineWidth = stroke.width * 10
+        } else {
+          ctx.globalCompositeOperation = 'source-over'
+          ctx.strokeStyle = stroke.color
+          ctx.lineWidth = stroke.width
+        }
+
+        ctx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1])
+        ctx.lineTo(point[0], point[1])
+        ctx.stroke()
+        ctx.restore()
+      }
     }
 
-    // ── Auto-correção de forma: reinicia timer a cada movimento ─────────
+    // Auto-correção de forma
     if (activeTool === 'pen' || activeTool === 'highlight') {
       if (isStraightenedRef.current) {
-        // Usuário moveu após correção — volta ao desenho livre
         isStraightenedRef.current = false
       }
       if (straightenTimerRef.current) clearTimeout(straightenTimerRef.current)
@@ -385,7 +532,6 @@ export function PdfViewer({
         liveStroke.current = { ...liveStroke.current, points: correctedPoints }
         isStraightenedRef.current = true
 
-        // Redesenhar como preview da forma corrigida
         redrawPage(annotCanvas, strokePage, latestStrokes.current)
         drawStroke(strokeCtx, liveStroke.current)
       }, 500)
@@ -403,6 +549,42 @@ export function PdfViewer({
     }
     liveStroke.current = null
   }
+
+  // ── Text box placement on canvas click ───────────────────────────────────
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>, page: number) => {
+    if (activeTool !== 'text') return
+    const canvas = annotCanvases.current[page - 1]
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
+    const xNorm = (e.clientX - rect.left) / rect.width
+    const yNorm = (e.clientY - rect.top) / rect.height
+    setTextBoxes((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        tool: 'text' as const,
+        page,
+        x: xNorm,
+        y: yNorm,
+        width: 0.3,
+        height: 0.1,
+        content: '',
+        fontSize: textFontSize,
+        color: textColor,
+      },
+    ])
+  }
+
+  const updateTextBox = useCallback(
+    (id: string, updates: Partial<Omit<PdfTextBox, 'id' | 'tool' | 'page'>>) => {
+      setTextBoxes((prev) => prev.map((b) => (b.id === id ? { ...b, ...updates } : b)))
+    },
+    [],
+  )
+
+  const deleteTextBox = useCallback((id: string) => {
+    setTextBoxes((prev) => prev.filter((b) => b.id !== id))
+  }, [])
 
   // ── Mesclar PDF ─────────────────────────────────────────────────────────
   const handleMergeFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -515,6 +697,7 @@ export function PdfViewer({
   const cursorStyle = (tool: PdfTool) => {
     if (tool === 'eraser') return 'cell'
     if (tool === 'pointer') return 'default'
+    if (tool === 'text') return 'text'
     return 'crosshair'
   }
 
@@ -533,7 +716,10 @@ export function PdfViewer({
         onHighlightOpacityChange={setHighlightOpacity}
         highlightWidth={highlightWidth}
         onHighlightWidthChange={setHighlightWidth}
-
+        textFontSize={textFontSize}
+        onTextFontSizeChange={setTextFontSize}
+        textColor={textColor}
+        onTextColorChange={setTextColor}
         onUndo={() => dispatch({ type: 'UNDO' })}
         onRedo={() => dispatch({ type: 'REDO' })}
         canUndo={annot.past.length > 0}
@@ -547,7 +733,6 @@ export function PdfViewer({
         onZoomOut={handleZoomOut}
       />
 
-      {/* Input oculto para seleção do segundo PDF */}
       <input
         ref={mergeInputRef}
         type="file"
@@ -565,24 +750,36 @@ export function PdfViewer({
 
         <div className="flex flex-col items-center gap-6">
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
-            <div key={pageNum} className="relative shadow-2xl">
+            <div
+              key={pageNum}
+              className="relative shadow-2xl"
+              ref={(el) => { pageRefs.current[pageNum - 1] = el }}
+            >
               <canvas
-                ref={(el) => {
-                  pdfCanvases.current[pageNum - 1] = el
-                }}
+                ref={(el) => { pdfCanvases.current[pageNum - 1] = el }}
                 className="block"
               />
               <canvas
-                ref={(el) => {
-                  annotCanvases.current[pageNum - 1] = el
-                }}
+                ref={(el) => { annotCanvases.current[pageNum - 1] = el }}
                 className="absolute inset-0 touch-none"
                 style={{ cursor: cursorStyle(activeTool) }}
                 onMouseDown={(e) => handleMouseDown(e, pageNum)}
                 onMouseMove={(e) => handleMouseMove(e, pageNum)}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
+                onClick={(e) => handleCanvasClick(e, pageNum)}
               />
+              {textBoxes
+                .filter((tb) => tb.page === pageNum)
+                .map((tb) => (
+                  <TextBoxOverlay
+                    key={tb.id}
+                    box={tb}
+                    getPageRect={() => pageRefs.current[pageNum - 1]?.getBoundingClientRect() ?? null}
+                    onUpdate={updateTextBox}
+                    onDelete={deleteTextBox}
+                  />
+                ))}
             </div>
           ))}
         </div>

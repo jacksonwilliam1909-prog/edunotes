@@ -11,7 +11,7 @@ import { useUIStore } from '../../store/useUIStore'
 import { useAuthStore } from '../../store/useAuthStore'
 import { supabase } from '../../lib/supabase'
 import { cn } from '../../lib/utils'
-import type { Note, PdfStroke } from '../../types'
+import type { Note, PdfAnnotation } from '../../types'
 
 type SaveStatus = 'idle' | 'saving' | 'saved'
 type ActiveTab = 'note' | 'pdf'
@@ -152,7 +152,7 @@ export function NoteEditorPage() {
   }
 
   const handleAnnotationsChange = useCallback(
-    (annotations: PdfStroke[]) => {
+    (annotations: PdfAnnotation[]) => {
       if (annotationTimerRef.current) clearTimeout(annotationTimerRef.current)
       annotationTimerRef.current = setTimeout(async () => {
         if (noteIdRef.current) {
@@ -426,7 +426,7 @@ export function NoteEditorPage() {
               </div>
 
               {/* Editor */}
-              <div className="bg-white dark:bg-gray-800/80 rounded-2xl border border-gray-100 dark:border-gray-700/50 shadow-sm overflow-hidden">
+              <div className="bg-white dark:bg-gray-800/80 rounded-2xl border border-gray-100 dark:border-gray-700/50 shadow-sm">
                 <Editor
                   content={content}
                   onChange={handleContentChange}

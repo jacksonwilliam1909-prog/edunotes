@@ -8,6 +8,21 @@ export interface PdfStroke {
   opacity?: number
 }
 
+export interface PdfTextBox {
+  id: string
+  tool: 'text'
+  page: number
+  x: number
+  y: number
+  width: number
+  height: number
+  content: string
+  fontSize: number
+  color: string
+}
+
+export type PdfAnnotation = PdfStroke | PdfTextBox
+
 export interface Profile {
   id: string
   name: string
@@ -39,7 +54,7 @@ export interface Note {
   notebook?: Pick<Notebook, 'id' | 'name' | 'color'>
   tags?: Tag[]
   pdf_url: string | null
-  pdf_annotations: PdfStroke[] | null
+  pdf_annotations: PdfAnnotation[] | null
 }
 
 export interface Tag {
@@ -61,7 +76,7 @@ export type NoteFormData = {
   is_favorite: boolean
   is_pinned: boolean
   pdf_url: string | null
-  pdf_annotations: PdfStroke[] | null
+  pdf_annotations: PdfAnnotation[] | null
 }
 
 export type NotebookFormData = {
