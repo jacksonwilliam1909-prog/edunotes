@@ -98,7 +98,7 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: PdfStroke) {
     ctx.globalCompositeOperation = 'multiply'
     ctx.strokeStyle = stroke.color
     ctx.lineWidth = stroke.width * 14
-    ctx.globalAlpha = stroke.opacity ?? 1.0
+    ctx.globalAlpha = stroke.opacity ?? 0.4
   } else {
     ctx.globalCompositeOperation = 'source-over'
     ctx.strokeStyle = stroke.color
