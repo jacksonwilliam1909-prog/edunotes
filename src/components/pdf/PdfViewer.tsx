@@ -95,10 +95,10 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: PdfStroke) {
     ctx.strokeStyle = 'rgba(0,0,0,1)'
     ctx.lineWidth = stroke.width * 10
   } else if (stroke.tool === 'highlight') {
-    ctx.globalCompositeOperation = 'multiply'
+    ctx.globalCompositeOperation = 'source-over'
     ctx.strokeStyle = stroke.color
     ctx.lineWidth = stroke.width * 14
-    ctx.globalAlpha = stroke.opacity ?? 0.4
+    ctx.globalAlpha = stroke.opacity ?? 1.0
   } else {
     ctx.globalCompositeOperation = 'source-over'
     ctx.strokeStyle = stroke.color
@@ -762,7 +762,7 @@ export function PdfViewer({
               <canvas
                 ref={(el) => { annotCanvases.current[pageNum - 1] = el }}
                 className="absolute inset-0 touch-none"
-                style={{ cursor: cursorStyle(activeTool) }}
+                style={{ cursor: cursorStyle(activeTool), mixBlendMode: 'multiply' }}
                 onMouseDown={(e) => handleMouseDown(e, pageNum)}
                 onMouseMove={(e) => handleMouseMove(e, pageNum)}
                 onMouseUp={handleMouseUp}
