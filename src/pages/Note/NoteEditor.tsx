@@ -158,7 +158,7 @@ export function NoteEditorPage() {
         if (noteIdRef.current) {
           await updateNote(noteIdRef.current, { pdf_annotations: annotations })
         }
-      }, 1500)
+      }, 500)
     },
     [updateNote],
   )
