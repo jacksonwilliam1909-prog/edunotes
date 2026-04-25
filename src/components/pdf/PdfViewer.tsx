@@ -606,7 +606,7 @@ export function PdfViewer({
       copiedPages.forEach((p) => pdfA.addPage(p))
 
       const mergedBytes = await pdfA.save()
-      const blob = new Blob([mergedBytes], { type: 'application/pdf' })
+      const blob = new Blob([mergedBytes as BlobPart], { type: 'application/pdf' })
 
       if (mergedBlobUrlRef.current) URL.revokeObjectURL(mergedBlobUrlRef.current)
       const newUrl = URL.createObjectURL(blob)
@@ -679,7 +679,7 @@ export function PdfViewer({
       }
 
       const savedBytes = await pdfLibDoc.save()
-      const blob = new Blob([savedBytes], { type: 'application/pdf' })
+      const blob = new Blob([savedBytes as BlobPart], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
