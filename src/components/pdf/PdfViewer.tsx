@@ -98,7 +98,7 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: PdfStroke) {
     ctx.globalCompositeOperation = 'source-over'
     ctx.strokeStyle = stroke.color
     ctx.lineWidth = stroke.width * 14
-    ctx.globalAlpha = stroke.opacity ?? 0.35
+    ctx.globalAlpha = stroke.opacity ?? 1.0
   } else {
     ctx.globalCompositeOperation = 'source-over'
     ctx.strokeStyle = stroke.color
@@ -322,7 +322,7 @@ export function PdfViewer({
   const [penColor, setPenColor] = useState('#1e3a8a')
   const [penWidth, setPenWidth] = useState(2)
   const [highlightColor, setHighlightColor] = useState('#fbbf24')
-  const [highlightOpacity, setHighlightOpacity] = useState(0.35)
+  const [highlightOpacity, setHighlightOpacity] = useState(1.0)
   const [highlightWidth, setHighlightWidth] = useState(0.5)
   const [textFontSize, setTextFontSize] = useState(14)
   const [textColor, setTextColor] = useState('#111827')
