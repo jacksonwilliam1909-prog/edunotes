@@ -131,6 +131,7 @@ type AnnotAction =
   | { type: 'ADD'; stroke: PdfStroke }
   | { type: 'UNDO' }
   | { type: 'REDO' }
+  | { type: 'RESET'; strokes: PdfStroke[] }
 
 function annotReducer(s: AnnotState, a: AnnotAction): AnnotState {
   switch (a.type) {
@@ -150,6 +151,8 @@ function annotReducer(s: AnnotState, a: AnnotAction): AnnotState {
         past: [...s.past, s.strokes],
         future: s.future.slice(1),
       }
+    case 'RESET':
+      return { strokes: a.strokes, past: [], future: [] }
   }
 }
 
@@ -362,7 +365,11 @@ export function PdfViewer({
       if (mergedBlobUrlRef.current) URL.revokeObjectURL(mergedBlobUrlRef.current)
     }
   }, [])
-
+  // Reset annotations when loaded from DB
+  useEffect(() => {
+    dispatch({ type: 'RESET', strokes: initialAnnotations.filter((a): a is PdfStroke => a.tool !== 'text') })
+    setTextBoxes(initialAnnotations.filter((a): a is PdfTextBox => a.tool === 'text'))
+  }, [initialAnnotations])
   // Sync annotations (strokes + text boxes) to parent
   useEffect(() => {
     latestStrokes.current = annot.strokes
