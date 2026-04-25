@@ -369,7 +369,7 @@ export function PdfViewer({
   useEffect(() => {
     dispatch({ type: 'RESET', strokes: initialAnnotations.filter((a): a is PdfStroke => a.tool !== 'text') })
     setTextBoxes(initialAnnotations.filter((a): a is PdfTextBox => a.tool === 'text'))
-  }, [initialAnnotations])
+  }, [])
   // Sync annotations (strokes + text boxes) to parent
   useEffect(() => {
     latestStrokes.current = annot.strokes
