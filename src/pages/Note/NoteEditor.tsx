@@ -167,7 +167,7 @@ export function NoteEditorPage() {
     async (bytes: Uint8Array) => {
       if (!noteIdRef.current || !user) return
       try {
-        const file = new File([bytes], 'merged.pdf', { type: 'application/pdf' })
+        const file = new File([bytes as BlobPart], 'merged.pdf', { type: 'application/pdf' })
         const path = `${user.id}/${noteIdRef.current}.pdf`
         const { error: uploadError } = await supabase.storage
           .from('pdfs')
@@ -286,7 +286,7 @@ export function NoteEditorPage() {
       // Bug 1 fix: revoke any lingering blob URL on unmount
       if (localBlobUrlRef.current) URL.revokeObjectURL(localBlobUrlRef.current)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const activePdfUrl = localPdfUrl ?? note?.pdf_url ?? null
