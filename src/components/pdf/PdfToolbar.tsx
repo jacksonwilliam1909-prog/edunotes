@@ -224,6 +224,16 @@ export function PdfToolbar({
               style={{ background: c.value }}
             />
           ))}
+          <label className="w-6 h-6 rounded-full cursor-pointer border-2 border-gray-400 overflow-hidden" title="Cor personalizada">
+            <input
+              type="color"
+              value={highlightColor}
+              onChange={(e) => onHighlightColorChange(e.target.value)}
+              className="opacity-0 w-0 h-0"
+            />
+            <div className="w-full h-full" style={{ background: highlightColor }} />
+          </label>
+
           <Divider />
           {/* Espessura */}
           {HIGHLIGHT_WIDTHS.map((w) => (
