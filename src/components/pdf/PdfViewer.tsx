@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { PDFDocument } from 'pdf-lib'
 import { toast } from 'sonner'
+import { Search, ChevronUp, ChevronDown, X, Loader2 } from 'lucide-react'
 import { PdfToolbar } from './PdfToolbar'
 import type { PdfTool } from './PdfToolbar'
 import type { PdfStroke, PdfTextBox, PdfAnnotation } from '../../types'
@@ -154,6 +155,13 @@ function annotReducer(s: AnnotState, a: AnnotAction): AnnotState {
     case 'RESET':
       return { strokes: a.strokes, past: [], future: [] }
   }
+}
+
+// ── Search types ─────────────────────────────────────────────────────────────
+
+type SearchMatch = {
+  page: number
+  rects: { x: number; y: number; width: number; height: number }[]
 }
 
 // ── TextBoxOverlay ───────────────────────────────────────────────────────────
@@ -348,6 +356,17 @@ export function PdfViewer({
     future: [],
   })
 
+  // Page navigation state
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageInputValue, setPageInputValue] = useState('1')
+
+  // Search state
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([])
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(-1)
+  const [isSearching, setIsSearching] = useState(false)
+
   const pdfCanvases = useRef<(HTMLCanvasElement | null)[]>([])
   const annotCanvases = useRef<(HTMLCanvasElement | null)[]>([])
   const pageRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -356,21 +375,26 @@ export function PdfViewer({
   const latestStrokes = useRef(
     initialAnnotations.filter((a): a is PdfStroke => a.tool !== 'text'),
   )
-
   const straightenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isStraightenedRef = useRef(false)
+
+  // Navigation & search refs
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const pageInputRef = useRef<HTMLInputElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchAbortRef = useRef(false)
 
   useEffect(() => {
     return () => {
       if (mergedBlobUrlRef.current) URL.revokeObjectURL(mergedBlobUrlRef.current)
     }
   }, [])
-  // Reset annotations when loaded from DB
+
   useEffect(() => {
     dispatch({ type: 'RESET', strokes: initialAnnotations.filter((a): a is PdfStroke => a.tool !== 'text') })
     setTextBoxes(initialAnnotations.filter((a): a is PdfTextBox => a.tool === 'text'))
   }, [])
-  // Sync annotations (strokes + text boxes) to parent
+
   useEffect(() => {
     latestStrokes.current = annot.strokes
     onAnnotationsChange([...annot.strokes, ...textBoxes])
@@ -435,6 +459,177 @@ export function PdfViewer({
     [],
   )
 
+  // ── Page tracking via scroll ─────────────────────────────────────────────
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container || !numPages) return
+
+    const update = () => {
+      if (document.activeElement === pageInputRef.current) return
+      const containerRect = container.getBoundingClientRect()
+      const containerMid = containerRect.top + containerRect.height / 2
+      let best = 0
+      let bestDist = Infinity
+      pageRefs.current.slice(0, numPages).forEach((ref, idx) => {
+        if (!ref) return
+        const rect = ref.getBoundingClientRect()
+        const pageMid = rect.top + rect.height / 2
+        const dist = Math.abs(pageMid - containerMid)
+        if (dist < bestDist) { bestDist = dist; best = idx }
+      })
+      const newPage = best + 1
+      setCurrentPage(newPage)
+      setPageInputValue(String(newPage))
+    }
+
+    container.addEventListener('scroll', update, { passive: true })
+    update()
+    return () => container.removeEventListener('scroll', update)
+  }, [numPages])
+
+  // ── Clear search on zoom change ──────────────────────────────────────────
+  useEffect(() => {
+    searchAbortRef.current = true
+    setSearchMatches([])
+    setCurrentMatchIndex(-1)
+  }, [scale])
+
+  // ── Navigation helpers ───────────────────────────────────────────────────
+  const scrollToPage = useCallback((page: number) => {
+    const container = scrollContainerRef.current
+    const pageEl = pageRefs.current[page - 1]
+    if (!container || !pageEl) return
+    const containerRect = container.getBoundingClientRect()
+    const pageRect = pageEl.getBoundingClientRect()
+    container.scrollTop += pageRect.top - containerRect.top - 24
+  }, [])
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearchQuery('')
+    setSearchMatches([])
+    setCurrentMatchIndex(-1)
+  }, [])
+
+  const goToMatch = useCallback((idx: number) => {
+    if (searchMatches.length === 0) return
+    const newIdx = ((idx % searchMatches.length) + searchMatches.length) % searchMatches.length
+    setCurrentMatchIndex(newIdx)
+    scrollToPage(searchMatches[newIdx].page)
+  }, [searchMatches, scrollToPage])
+
+  const runSearch = useCallback(async () => {
+    if (!pdfDoc || !searchQuery.trim()) {
+      setSearchMatches([])
+      setCurrentMatchIndex(-1)
+      return
+    }
+
+    searchAbortRef.current = false
+    setIsSearching(true)
+    const matches: SearchMatch[] = []
+    const queryLower = searchQuery.toLowerCase()
+
+    try {
+      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        if (searchAbortRef.current) break
+
+        const page = await pdfDoc.getPage(pageNum)
+        const viewport = page.getViewport({ scale })
+        const textContent = await page.getTextContent()
+
+        // Build character map for this page
+        type ItemInfo = {
+          str: string
+          charOffset: number
+          transform: number[]
+          width: number
+          height: number
+        }
+        const items: ItemInfo[] = []
+        let pageText = ''
+
+        for (const rawItem of textContent.items) {
+          if (!('str' in rawItem)) continue
+          const item = rawItem as { str: string; transform: number[]; width: number; height: number }
+          if (!item.str) continue
+          items.push({
+            str: item.str,
+            charOffset: pageText.length,
+            transform: item.transform,
+            width: item.width,
+            height: item.height,
+          })
+          pageText += item.str
+        }
+
+        // Find all occurrences of the query in the page text
+        const pageTextLower = pageText.toLowerCase()
+        let offset = 0
+
+        while (offset < pageTextLower.length) {
+          if (searchAbortRef.current) break
+          const matchStart = pageTextLower.indexOf(queryLower, offset)
+          if (matchStart === -1) break
+
+          const matchEnd = matchStart + queryLower.length
+          const overlapping = items.filter(
+            (it) => it.charOffset < matchEnd && it.charOffset + it.str.length > matchStart,
+          )
+
+          const rects: SearchMatch['rects'] = []
+          for (const it of overlapping) {
+            const [, , , , tx, ty] = it.transform
+            // Use item.height if valid, fall back to font size from transform matrix
+            const itemH = it.height > 0
+              ? it.height
+              : (Math.abs(it.transform[3]) || Math.abs(it.transform[0]) || 12)
+
+            const [x1, vy1] = viewport.convertToViewportPoint(tx, ty)
+            const [x2, vy2] = viewport.convertToViewportPoint(tx + it.width, ty + itemH)
+
+            rects.push({
+              x: Math.min(x1, x2),
+              y: Math.min(vy1, vy2),
+              width: Math.abs(x2 - x1),
+              height: Math.abs(vy2 - vy1) + 2,
+            })
+          }
+
+          if (rects.length > 0) matches.push({ page: pageNum, rects })
+          offset = matchStart + 1
+        }
+      }
+
+      if (!searchAbortRef.current) {
+        setSearchMatches(matches)
+        setCurrentMatchIndex(matches.length > 0 ? 0 : -1)
+        if (matches.length > 0) scrollToPage(matches[0].page)
+      }
+    } catch (err) {
+      console.error(err)
+      if (!searchAbortRef.current) toast.error('Erro na busca')
+    } finally {
+      setIsSearching(false)
+    }
+  }, [pdfDoc, searchQuery, numPages, scale, scrollToPage])
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault()
+        setSearchOpen(true)
+        setTimeout(() => searchInputRef.current?.focus(), 50)
+      }
+      if (e.key === 'Escape' && searchOpen) {
+        closeSearch()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [searchOpen, closeSearch])
+
   // ── Drawing helpers ──────────────────────────────────────────────────────
   const toCanvasCoords = (
     e: React.MouseEvent<HTMLCanvasElement>,
@@ -480,7 +675,6 @@ export function PdfViewer({
       const stroke = liveStroke.current
 
       if (stroke.tool === 'highlight') {
-        // Full redraw prevents opacity stacking from incremental overlapping segments
         redrawPage(canvas, page, latestStrokes.current)
         drawStroke(ctx, stroke)
       } else {
@@ -506,7 +700,6 @@ export function PdfViewer({
       }
     }
 
-    // Auto-correção de forma
     if (activeTool === 'pen' || activeTool === 'highlight') {
       if (isStraightenedRef.current) {
         isStraightenedRef.current = false
@@ -738,6 +931,15 @@ export function PdfViewer({
         scale={scale}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
+        searchOpen={searchOpen}
+        onToggleSearch={() => {
+          if (!searchOpen) {
+            setSearchOpen(true)
+            setTimeout(() => searchInputRef.current?.focus(), 50)
+          } else {
+            closeSearch()
+          }
+        }}
       />
 
       <input
@@ -748,47 +950,179 @@ export function PdfViewer({
         onChange={handleMergeFileChange}
       />
 
-      <div className="flex-1 overflow-auto bg-gray-300 dark:bg-gray-950 p-6">
-        {numPages === 0 && (
-          <div className="flex items-center justify-center h-full">
-            <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+      <div className="flex flex-col flex-1 overflow-hidden">
+        {/* ── Navigation top bar ── */}
+        <div className="flex items-center gap-3 px-3 py-1.5 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
+          {/* Page indicator */}
+          <div className="flex items-center gap-1.5 text-gray-600 dark:text-gray-400">
+            <span className="text-xs">Página</span>
+            <input
+              ref={pageInputRef}
+              type="text"
+              inputMode="numeric"
+              value={pageInputValue}
+              onChange={(e) => setPageInputValue(e.target.value.replace(/\D/g, ''))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const page = parseInt(pageInputValue)
+                  if (page >= 1 && page <= numPages) {
+                    scrollToPage(page)
+                    ;(e.target as HTMLInputElement).blur()
+                  } else {
+                    setPageInputValue(String(currentPage))
+                  }
+                } else if (e.key === 'Escape') {
+                  setPageInputValue(String(currentPage))
+                  ;(e.target as HTMLInputElement).blur()
+                }
+              }}
+              onFocus={(e) => e.target.select()}
+              onBlur={() => setPageInputValue(String(currentPage))}
+              className="w-12 text-center border border-gray-300 dark:border-gray-600 rounded px-1 py-0.5 bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-500 text-xs font-medium text-gray-900 dark:text-gray-100"
+            />
+            <span className="text-xs">de {numPages || '–'}</span>
           </div>
-        )}
 
-        <div className="flex flex-col items-center gap-6">
-          {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
-            <div
-              key={pageNum}
-              className="relative shadow-2xl"
-              ref={(el) => { pageRefs.current[pageNum - 1] = el }}
-            >
-              <canvas
-                ref={(el) => { pdfCanvases.current[pageNum - 1] = el }}
-                className="block"
+          <div className="flex-1" />
+
+          {/* Search bar */}
+          {searchOpen ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') runSearch()
+                  if (e.key === 'Escape') closeSearch()
+                }}
+                placeholder="Buscar no PDF..."
+                className="w-52 border border-gray-300 dark:border-gray-600 rounded px-2.5 py-1 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
-              <canvas
-                ref={(el) => { annotCanvases.current[pageNum - 1] = el }}
-                className="absolute inset-0 touch-none"
-                style={{ cursor: cursorStyle(activeTool), mixBlendMode: 'multiply' }}
-                onMouseDown={(e) => handleMouseDown(e, pageNum)}
-                onMouseMove={(e) => handleMouseMove(e, pageNum)}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
-                onClick={(e) => handleCanvasClick(e, pageNum)}
-              />
-              {textBoxes
-                .filter((tb) => tb.page === pageNum)
-                .map((tb) => (
-                  <TextBoxOverlay
-                    key={tb.id}
-                    box={tb}
-                    getPageRect={() => pageRefs.current[pageNum - 1]?.getBoundingClientRect() ?? null}
-                    onUpdate={updateTextBox}
-                    onDelete={deleteTextBox}
-                  />
-                ))}
+
+              <button
+                onClick={runSearch}
+                disabled={isSearching || !searchQuery.trim()}
+                title="Buscar"
+                className="px-2 py-1 text-xs rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isSearching ? <Loader2 size={12} className="animate-spin" /> : 'Buscar'}
+              </button>
+
+              {searchQuery && !isSearching && (
+                <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap flex-shrink-0 min-w-[72px]">
+                  {searchMatches.length === 0
+                    ? 'Sem resultados'
+                    : `${currentMatchIndex + 1} / ${searchMatches.length}`}
+                </span>
+              )}
+
+              <button
+                onClick={() => goToMatch(currentMatchIndex - 1)}
+                disabled={searchMatches.length === 0}
+                title="Resultado anterior (Shift+Enter)"
+                className="p-1 rounded text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <ChevronUp size={14} />
+              </button>
+              <button
+                onClick={() => goToMatch(currentMatchIndex + 1)}
+                disabled={searchMatches.length === 0}
+                title="Próximo resultado (Enter)"
+                className="p-1 rounded text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <ChevronDown size={14} />
+              </button>
+              <button
+                onClick={closeSearch}
+                title="Fechar busca (ESC)"
+                className="p-1 rounded text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              >
+                <X size={14} />
+              </button>
             </div>
-          ))}
+          ) : (
+            <button
+              onClick={() => {
+                setSearchOpen(true)
+                setTimeout(() => searchInputRef.current?.focus(), 50)
+              }}
+              title="Buscar no PDF (Ctrl+F)"
+              className="p-1 rounded text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            >
+              <Search size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* ── PDF scrollable area ── */}
+        <div ref={scrollContainerRef} className="flex-1 overflow-auto bg-gray-300 dark:bg-gray-950 p-6">
+          {numPages === 0 && (
+            <div className="flex items-center justify-center h-full">
+              <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+
+          <div className="flex flex-col items-center gap-6">
+            {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
+              <div
+                key={pageNum}
+                className="relative shadow-2xl"
+                ref={(el) => { pageRefs.current[pageNum - 1] = el }}
+              >
+                <canvas
+                  ref={(el) => { pdfCanvases.current[pageNum - 1] = el }}
+                  className="block"
+                />
+
+                {/* Search highlight overlays (between PDF canvas and annotation canvas) */}
+                {searchMatches.map((match, matchIdx) =>
+                  match.page === pageNum
+                    ? match.rects.map((rect, rectIdx) => (
+                        <div
+                          key={`${matchIdx}-${rectIdx}`}
+                          style={{
+                            position: 'absolute',
+                            left: rect.x,
+                            top: rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                            background: matchIdx === currentMatchIndex
+                              ? 'rgba(255, 140, 0, 0.5)'
+                              : 'rgba(255, 220, 0, 0.45)',
+                            pointerEvents: 'none',
+                            mixBlendMode: 'multiply',
+                          }}
+                        />
+                      ))
+                    : null,
+                )}
+
+                <canvas
+                  ref={(el) => { annotCanvases.current[pageNum - 1] = el }}
+                  className="absolute inset-0 touch-none"
+                  style={{ cursor: cursorStyle(activeTool), mixBlendMode: 'multiply' }}
+                  onMouseDown={(e) => handleMouseDown(e, pageNum)}
+                  onMouseMove={(e) => handleMouseMove(e, pageNum)}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
+                  onClick={(e) => handleCanvasClick(e, pageNum)}
+                />
+                {textBoxes
+                  .filter((tb) => tb.page === pageNum)
+                  .map((tb) => (
+                    <TextBoxOverlay
+                      key={tb.id}
+                      box={tb}
+                      getPageRect={() => pageRefs.current[pageNum - 1]?.getBoundingClientRect() ?? null}
+                      onUpdate={updateTextBox}
+                      onDelete={deleteTextBox}
+                    />
+                  ))}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

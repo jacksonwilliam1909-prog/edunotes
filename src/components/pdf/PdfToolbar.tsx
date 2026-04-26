@@ -1,6 +1,6 @@
 import {
   MousePointer2, Pen, Highlighter, Eraser, Undo2, Redo2,
-  FilePlus2, Download, FileDown, Loader2, ZoomIn, ZoomOut, Type,
+  FilePlus2, Download, FileDown, Loader2, ZoomIn, ZoomOut, Type, Search,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -111,6 +111,8 @@ interface PdfToolbarProps {
   scale: number
   onZoomIn: () => void
   onZoomOut: () => void
+  searchOpen: boolean
+  onToggleSearch: () => void
 }
 
 export function PdfToolbar({
@@ -141,6 +143,8 @@ export function PdfToolbar({
   scale,
   onZoomIn,
   onZoomOut,
+  searchOpen,
+  onToggleSearch,
 }: PdfToolbarProps) {
   return (
     <div className="w-14 flex-shrink-0 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col items-center py-3 gap-0.5 overflow-y-auto">
@@ -331,6 +335,13 @@ export function PdfToolbar({
       </ToolBtn>
       <ToolBtn onClick={onRedo} title="Refazer (Ctrl+Y)" disabled={!canRedo}>
         <Redo2 size={18} />
+      </ToolBtn>
+
+      <Divider />
+
+      {/* Busca no PDF */}
+      <ToolBtn active={searchOpen} onClick={onToggleSearch} title="Buscar no PDF (Ctrl+F)">
+        <Search size={18} />
       </ToolBtn>
 
       <Divider />
