@@ -1,9 +1,10 @@
 'use strict'
 
-// Preload roda em contexto isolado antes do renderer
-// Use contextBridge para expor APIs seguras ao renderer se necessário
-const { contextBridge } = require('electron')
+const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
+  // Returns the pdf.worker .mjs file content so the renderer can create
+  // a blob: URL — needed because Chromium Workers cannot read .asar files.
+  getPdfWorkerContent: () => ipcRenderer.invoke('pdf-worker-src'),
 })

@@ -1,9 +1,6 @@
 import { useRef, useEffect, useState, useCallback, useReducer } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-// ?url makes Vite copy the worker to dist/assets and return its file path.
-// new URL(..., import.meta.url) doesn't reliably bundle node_modules files,
-// causing the worker to 404 under Electron's file:// protocol.
 import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDFDocument } from 'pdf-lib'
 import { toast } from 'sonner'
@@ -12,7 +9,23 @@ import { PdfToolbar } from './PdfToolbar'
 import type { PdfTool } from './PdfToolbar'
 import type { PdfStroke, PdfTextBox, PdfAnnotation } from '../../types'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
+// Chromium's Worker API cannot read files from inside an Electron .asar archive.
+// When running packaged, ask the main process (Node.js, which IS asar-patched)
+// for the worker file content and create a blob: URL — which has no origin or
+// protocol restrictions. Falls back to the ?url path in dev / web contexts.
+const workerReady: Promise<void> = (async () => {
+  type ElectronAPI = { getPdfWorkerContent?: () => Promise<string | null> }
+  const api = (window as unknown as { electronAPI?: ElectronAPI }).electronAPI
+  if (api?.getPdfWorkerContent) {
+    const content = await api.getPdfWorkerContent()
+    if (content) {
+      const blob = new Blob([content], { type: 'application/javascript' })
+      pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob)
+      return
+    }
+  }
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
+})()
 
 // ── Shape detection helpers ──────────────────────────────────────────────────
 
@@ -501,12 +514,15 @@ export function PdfViewer({
   // ── PDF loading ──────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
-    const task = pdfjsLib.getDocument(effectivePdfUrl)
-    task.promise.then((doc) => {
-      if (!cancelled) {
-        setPdfDoc(doc)
-        setNumPages(doc.numPages)
-      }
+    workerReady.then(() => {
+      if (cancelled) return
+      const task = pdfjsLib.getDocument(effectivePdfUrl)
+      task.promise.then((doc) => {
+        if (!cancelled) {
+          setPdfDoc(doc)
+          setNumPages(doc.numPages)
+        }
+      })
     })
     return () => { cancelled = true }
   }, [effectivePdfUrl])
