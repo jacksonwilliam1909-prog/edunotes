@@ -43,14 +43,10 @@ export function useAuth() {
       if (error) throw error
 
       if (data.user) {
-        const { error: profileError } = await supabase.from('profiles').insert({
-          id: data.user.id,
-          name,
-        })
-        if (profileError) throw profileError
+        await supabase.from('profiles').upsert({ id: data.user.id, name })
       }
 
-      toast.success('Conta criada com sucesso! Verifique seu email.')
+      toast.success('Conta criada! Faça login para continuar.')
       navigate('/login')
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erro ao criar conta'
