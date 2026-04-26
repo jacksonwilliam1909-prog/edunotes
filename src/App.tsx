@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useAuthStore } from './store/useAuthStore'
 import { ProtectedRoute } from './components/layout/ProtectedRoute'
@@ -20,7 +20,7 @@ export default function App() {
   }, [initialize])
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Toaster position="top-right" richColors duration={3000} />
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -38,6 +38,6 @@ export default function App() {
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   )
 }
