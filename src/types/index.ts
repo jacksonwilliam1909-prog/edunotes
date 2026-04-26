@@ -2,6 +2,8 @@ export interface PdfStroke {
   id: string
   tool: 'pen' | 'highlight' | 'eraser'
   color: string
+  // Relative strokes store points and base width as fractions of the PDF page.
+  coordinateSpace?: 'relative'
   width: number
   page: number
   points: Array<[number, number]>

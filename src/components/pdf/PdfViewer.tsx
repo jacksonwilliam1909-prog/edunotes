@@ -84,32 +84,114 @@ function shapeToPoints(
 
 // ── Pure canvas helpers ──────────────────────────────────────────────────────
 
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: PdfStroke) {
-  if (stroke.points.length < 2) return
-  ctx.save()
+const RELATIVE_POINT_TOLERANCE = 0.05
+const MAX_RELATIVE_STROKE_WIDTH = 0.1
+
+function isRelativePoint(point: [number, number]) {
+  const [x, y] = point
+  return (
+    x >= -RELATIVE_POINT_TOLERANCE &&
+    x <= 1 + RELATIVE_POINT_TOLERANCE &&
+    y >= -RELATIVE_POINT_TOLERANCE &&
+    y <= 1 + RELATIVE_POINT_TOLERANCE
+  )
+}
+
+function isRelativeStroke(stroke: PdfStroke) {
+  if (stroke.coordinateSpace === 'relative') return true
+  if (stroke.width > MAX_RELATIVE_STROKE_WIDTH) return false
+  return stroke.points.every(isRelativePoint)
+}
+
+function toCanvasPoint(
+  canvas: HTMLCanvasElement,
+  stroke: PdfStroke,
+  point: [number, number],
+): [number, number] {
+  if (!isRelativeStroke(stroke)) return point
+  return [point[0] * canvas.width, point[1] * canvas.height]
+}
+
+function toRelativePoint(canvas: HTMLCanvasElement, point: [number, number]): [number, number] {
+  return [
+    point[0] / Math.max(canvas.width, 1),
+    point[1] / Math.max(canvas.height, 1),
+  ]
+}
+
+function getStrokeBaseWidth(canvas: HTMLCanvasElement, stroke: PdfStroke) {
+  if (!isRelativeStroke(stroke)) return stroke.width
+  return stroke.width * canvas.width
+}
+
+function applyStrokeStyle(ctx: CanvasRenderingContext2D, stroke: PdfStroke) {
+  const baseWidth = getStrokeBaseWidth(ctx.canvas, stroke)
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
-  ctx.beginPath()
 
   if (stroke.tool === 'eraser') {
     ctx.globalCompositeOperation = 'destination-out'
     ctx.strokeStyle = 'rgba(0,0,0,1)'
-    ctx.lineWidth = stroke.width * 10
+    ctx.lineWidth = baseWidth * 10
   } else if (stroke.tool === 'highlight') {
     ctx.globalCompositeOperation = 'source-over'
     ctx.strokeStyle = stroke.color
-    ctx.lineWidth = stroke.width * 14
+    ctx.lineWidth = baseWidth * 14
     ctx.globalAlpha = stroke.opacity ?? 0.8
   } else {
     ctx.globalCompositeOperation = 'source-over'
     ctx.strokeStyle = stroke.color
-    ctx.lineWidth = stroke.width
+    ctx.lineWidth = baseWidth
   }
+}
 
-  ctx.moveTo(stroke.points[0][0], stroke.points[0][1])
-  for (let i = 1; i < stroke.points.length; i++) {
-    ctx.lineTo(stroke.points[i][0], stroke.points[i][1])
+function normalizeStrokeForCanvas(stroke: PdfStroke, canvas: HTMLCanvasElement): PdfStroke {
+  if (stroke.coordinateSpace === 'relative') return stroke
+  if (isRelativeStroke(stroke)) return { ...stroke, coordinateSpace: 'relative' }
+  return {
+    ...stroke,
+    coordinateSpace: 'relative',
+    width: stroke.width / Math.max(canvas.width, 1),
+    points: stroke.points.map((point) => toRelativePoint(canvas, point)),
   }
+}
+
+function syncCanvasSize(canvas: HTMLCanvasElement, width: number, height: number) {
+  if (canvas.width !== width) canvas.width = width
+  if (canvas.height !== height) canvas.height = height
+  canvas.style.width = `${width}px`
+  canvas.style.height = `${height}px`
+}
+
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: PdfStroke) {
+  if (stroke.points.length < 2) return
+  ctx.save()
+  applyStrokeStyle(ctx, stroke)
+  ctx.beginPath()
+
+  const firstPoint = toCanvasPoint(ctx.canvas, stroke, stroke.points[0])
+  ctx.moveTo(firstPoint[0], firstPoint[1])
+  for (let i = 1; i < stroke.points.length; i++) {
+    const point = toCanvasPoint(ctx.canvas, stroke, stroke.points[i])
+    ctx.lineTo(point[0], point[1])
+  }
+  ctx.stroke()
+  ctx.restore()
+}
+
+function drawStrokeSegment(
+  ctx: CanvasRenderingContext2D,
+  stroke: PdfStroke,
+  from: [number, number],
+  to: [number, number],
+) {
+  ctx.save()
+  applyStrokeStyle(ctx, stroke)
+  ctx.beginPath()
+  const fromPoint = toCanvasPoint(ctx.canvas, stroke, from)
+  const toPoint = toCanvasPoint(ctx.canvas, stroke, to)
+  ctx.moveTo(fromPoint[0], fromPoint[1])
+  ctx.lineTo(toPoint[0], toPoint[1])
   ctx.stroke()
   ctx.restore()
 }
@@ -394,14 +476,26 @@ export function PdfViewer({
   }, [])
 
   useEffect(() => {
-    dispatch({ type: 'RESET', strokes: initialAnnotations.filter((a): a is PdfStroke => a.tool !== 'text') })
-    setTextBoxes(initialAnnotations.filter((a): a is PdfTextBox => a.tool === 'text'))
-  }, [])
-
-  useEffect(() => {
     latestStrokes.current = annot.strokes
     onAnnotationsChange([...annot.strokes, ...textBoxes])
   }, [annot.strokes, textBoxes, onAnnotationsChange])
+
+  const normalizeLegacyStrokesForPage = useCallback((pageNum: number, canvas: HTMLCanvasElement) => {
+    let changed = false
+    const normalized = latestStrokes.current.map((stroke) => {
+      if (stroke.page !== pageNum || stroke.coordinateSpace === 'relative') return stroke
+      const nextStroke = normalizeStrokeForCanvas(stroke, canvas)
+      if (nextStroke !== stroke) changed = true
+      return nextStroke
+    })
+
+    if (changed) {
+      latestStrokes.current = normalized
+      dispatch({ type: 'RESET', strokes: normalized })
+    }
+
+    return normalized
+  }, [])
 
   // ── PDF loading ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -426,18 +520,27 @@ export function PdfViewer({
 
       const page = await pdfDoc.getPage(pageNum)
       const viewport = page.getViewport({ scale: renderScale })
-      pdfCanvas.width = viewport.width
-      pdfCanvas.height = viewport.height
-      annotCanvas.width = viewport.width
-      annotCanvas.height = viewport.height
+      const canvasWidth = Math.max(1, Math.round(viewport.width))
+      const canvasHeight = Math.max(1, Math.round(viewport.height))
+      const pageEl = pageRefs.current[pageNum - 1]
+
+      if (pageEl) {
+        pageEl.style.width = `${canvasWidth}px`
+        pageEl.style.height = `${canvasHeight}px`
+      }
+
+      syncCanvasSize(pdfCanvas, canvasWidth, canvasHeight)
+      syncCanvasSize(annotCanvas, canvasWidth, canvasHeight)
 
       const ctx = pdfCanvas.getContext('2d')
       if (!ctx) return
+      ctx.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height)
       await page.render({ canvasContext: ctx, viewport, canvas: pdfCanvas }).promise
 
-      redrawPage(annotCanvas, pageNum, latestStrokes.current)
+      const strokes = normalizeLegacyStrokesForPage(pageNum, annotCanvas)
+      redrawPage(annotCanvas, pageNum, strokes)
     },
-    [pdfDoc, renderScale],
+    [pdfDoc, renderScale, normalizeLegacyStrokesForPage],
   )
 
   useEffect(() => {
@@ -528,8 +631,11 @@ export function PdfViewer({
   // ── Clear search immediately when user starts zooming ───────────────────
   useEffect(() => {
     searchAbortRef.current = true
-    setSearchMatches([])
-    setCurrentMatchIndex(-1)
+    const timer = window.setTimeout(() => {
+      setSearchMatches([])
+      setCurrentMatchIndex(-1)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [requestedScale])
 
   // ── Navigation helpers ───────────────────────────────────────────────────
@@ -669,15 +775,20 @@ export function PdfViewer({
   }, [searchOpen, closeSearch])
 
   // ── Drawing helpers ──────────────────────────────────────────────────────
-  const toCanvasCoords = (
+  const toPageCoords = (
     e: React.MouseEvent<HTMLCanvasElement>,
     canvas: HTMLCanvasElement,
   ): [number, number] => {
     const rect = canvas.getBoundingClientRect()
     return [
-      ((e.clientX - rect.left) * canvas.width) / rect.width,
-      ((e.clientY - rect.top) * canvas.height) / rect.height,
+      (e.clientX - rect.left) / rect.width,
+      (e.clientY - rect.top) / rect.height,
     ]
+  }
+
+  const toRelativeStrokeWidth = (width: number, canvas: HTMLCanvasElement) => {
+    const rect = canvas.getBoundingClientRect()
+    return width / Math.max(rect.width, 1)
   }
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>, page: number) => {
@@ -687,13 +798,15 @@ export function PdfViewer({
 
     isStraightenedRef.current = false
     isDrawing.current = true
+    const baseWidth = activeTool === 'highlight' ? highlightWidth : penWidth
     liveStroke.current = {
       id: crypto.randomUUID(),
       tool: activeTool,
       color: activeTool === 'highlight' ? highlightColor : activeTool === 'eraser' ? '' : penColor,
-      width: activeTool === 'highlight' ? highlightWidth : penWidth,
+      coordinateSpace: 'relative',
+      width: toRelativeStrokeWidth(baseWidth, canvas),
       page,
-      points: [toCanvasCoords(e, canvas)],
+      points: [toPageCoords(e, canvas)],
       opacity: activeTool === 'highlight' ? highlightOpacity : undefined,
     }
   }
@@ -705,7 +818,7 @@ export function PdfViewer({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const point = toCanvasCoords(e, canvas)
+    const point = toPageCoords(e, canvas)
     const pts = liveStroke.current.points
     liveStroke.current = { ...liveStroke.current, points: [...pts, point] }
 
@@ -716,25 +829,7 @@ export function PdfViewer({
         redrawPage(canvas, page, latestStrokes.current)
         drawStroke(ctx, stroke)
       } else {
-        ctx.save()
-        ctx.lineCap = 'round'
-        ctx.lineJoin = 'round'
-        ctx.beginPath()
-
-        if (stroke.tool === 'eraser') {
-          ctx.globalCompositeOperation = 'destination-out'
-          ctx.strokeStyle = 'rgba(0,0,0,1)'
-          ctx.lineWidth = stroke.width * 10
-        } else {
-          ctx.globalCompositeOperation = 'source-over'
-          ctx.strokeStyle = stroke.color
-          ctx.lineWidth = stroke.width
-        }
-
-        ctx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1])
-        ctx.lineTo(point[0], point[1])
-        ctx.stroke()
-        ctx.restore()
+        drawStrokeSegment(ctx, stroke, pts[pts.length - 1], point)
       }
     }
 
@@ -751,7 +846,9 @@ export function PdfViewer({
         const strokeCtx = annotCanvas.getContext('2d')
         if (!strokeCtx) return
 
-        const strokePts = liveStroke.current.points
+        const strokePts = liveStroke.current.points.map((point) =>
+          toCanvasPoint(annotCanvas, liveStroke.current as PdfStroke, point),
+        )
         if (strokePts.length < 2) return
 
         const xs = strokePts.map((p) => p[0])
@@ -762,10 +859,13 @@ export function PdfViewer({
         }
 
         const detectedShape = detectShape(strokePts)
-        const correctedPoints =
+        const correctedCanvasPoints =
           detectedShape === 'line'
             ? [strokePts[0], strokePts[strokePts.length - 1]]
             : shapeToPoints(detectedShape, bbox)
+        const correctedPoints = correctedCanvasPoints.map((point) =>
+          toRelativePoint(annotCanvas, point),
+        )
 
         liveStroke.current = { ...liveStroke.current, points: correctedPoints }
         isStraightenedRef.current = true
@@ -1146,7 +1246,7 @@ export function PdfViewer({
 
                 <canvas
                   ref={(el) => { annotCanvases.current[pageNum - 1] = el }}
-                  className="absolute inset-0 touch-none"
+                  className="absolute left-0 top-0 block touch-none"
                   style={{ cursor: cursorStyle(activeTool), mixBlendMode: 'multiply' }}
                   onMouseDown={(e) => handleMouseDown(e, pageNum)}
                   onMouseMove={(e) => handleMouseMove(e, pageNum)}
