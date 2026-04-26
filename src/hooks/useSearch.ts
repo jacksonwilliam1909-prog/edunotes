@@ -20,7 +20,7 @@ export function useSearch() {
           .from('notes')
           .select('*, notebook:notebooks(id, name, color)')
           .eq('user_id', user.id)
-          .or(`title.ilike.%${query}%,content.cs.{"text":"${query}"}`)
+          .ilike('title', `%${query}%`)
           .order('updated_at', { ascending: false })
           .limit(20)
 
