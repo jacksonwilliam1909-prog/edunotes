@@ -327,7 +327,10 @@ export function PdfViewer({
 }: PdfViewerProps) {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null)
   const [numPages, setNumPages] = useState(0)
-  const [scale, setScale] = useState(1.5)
+  // requestedScale: what the user wants (changes instantly)
+  // renderScale: what the canvases are actually rendered at (changes after 300ms debounce)
+  const [requestedScale, setRequestedScale] = useState(1.5)
+  const [renderScale, setRenderScale] = useState(1.5)
 
   const [activeTool, setActiveTool] = useState<PdfTool>('pointer')
   const [penColor, setPenColor] = useState('#1e3a8a')
@@ -422,7 +425,7 @@ export function PdfViewer({
       if (!pdfCanvas || !annotCanvas) return
 
       const page = await pdfDoc.getPage(pageNum)
-      const viewport = page.getViewport({ scale })
+      const viewport = page.getViewport({ scale: renderScale })
       pdfCanvas.width = viewport.width
       pdfCanvas.height = viewport.height
       annotCanvas.width = viewport.width
@@ -434,12 +437,27 @@ export function PdfViewer({
 
       redrawPage(annotCanvas, pageNum, latestStrokes.current)
     },
-    [pdfDoc, scale],
+    [pdfDoc, renderScale],
   )
 
   useEffect(() => {
     if (!pdfDoc || numPages === 0) return
-    for (let i = 1; i <= numPages; i++) renderPdfPage(i)
+    const container = scrollContainerRef.current
+    // Render visible pages first to minimize flash during zoom re-render
+    const visible: number[] = []
+    const rest: number[] = []
+    for (let i = 1; i <= numPages; i++) {
+      const ref = pageRefs.current[i - 1]
+      if (ref && container) {
+        const r = ref.getBoundingClientRect()
+        const c = container.getBoundingClientRect()
+        if (r.bottom >= c.top && r.top <= c.bottom) visible.push(i)
+        else rest.push(i)
+      } else {
+        rest.push(i)
+      }
+    }
+    ;[...visible, ...rest].forEach((i) => renderPdfPage(i))
   }, [pdfDoc, numPages, renderPdfPage])
 
   useEffect(() => {
@@ -451,13 +469,33 @@ export function PdfViewer({
 
   // ── Zoom handlers ────────────────────────────────────────────────────────
   const handleZoomIn = useCallback(
-    () => setScale((s) => Math.min(parseFloat((s + 0.25).toFixed(2)), 4.0)),
+    () => setRequestedScale((s) => Math.min(parseFloat((s + 0.25).toFixed(2)), 4.0)),
     [],
   )
   const handleZoomOut = useCallback(
-    () => setScale((s) => Math.max(parseFloat((s - 0.25).toFixed(2)), 0.5)),
+    () => setRequestedScale((s) => Math.max(parseFloat((s - 0.25).toFixed(2)), 0.5)),
     [],
   )
+
+  // ── Debounce: re-render canvases 300ms after zoom stabilises ─────────────
+  useEffect(() => {
+    const timer = setTimeout(() => setRenderScale(requestedScale), 300)
+    return () => clearTimeout(timer)
+  }, [requestedScale])
+
+  // ── Ctrl+Scroll zoom ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      const delta = e.deltaY < 0 ? 0.1 : -0.1
+      setRequestedScale((s) => Math.min(4.0, Math.max(0.5, parseFloat((s + delta).toFixed(2)))))
+    }
+    container.addEventListener('wheel', onWheel, { passive: false })
+    return () => container.removeEventListener('wheel', onWheel)
+  }, [])
 
   // ── Page tracking via scroll ─────────────────────────────────────────────
   useEffect(() => {
@@ -487,12 +525,12 @@ export function PdfViewer({
     return () => container.removeEventListener('scroll', update)
   }, [numPages])
 
-  // ── Clear search on zoom change ──────────────────────────────────────────
+  // ── Clear search immediately when user starts zooming ───────────────────
   useEffect(() => {
     searchAbortRef.current = true
     setSearchMatches([])
     setCurrentMatchIndex(-1)
-  }, [scale])
+  }, [requestedScale])
 
   // ── Navigation helpers ───────────────────────────────────────────────────
   const scrollToPage = useCallback((page: number) => {
@@ -535,7 +573,7 @@ export function PdfViewer({
         if (searchAbortRef.current) break
 
         const page = await pdfDoc.getPage(pageNum)
-        const viewport = page.getViewport({ scale })
+        const viewport = page.getViewport({ scale: renderScale })
         const textContent = await page.getTextContent()
 
         // Build character map for this page
@@ -612,7 +650,7 @@ export function PdfViewer({
     } finally {
       setIsSearching(false)
     }
-  }, [pdfDoc, searchQuery, numPages, scale, scrollToPage])
+  }, [pdfDoc, searchQuery, numPages, renderScale, scrollToPage])
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
@@ -928,7 +966,7 @@ export function PdfViewer({
         onDownload={handleDownload}
         onDownloadAnnotated={handleDownloadAnnotated}
         isMerging={isMerging}
-        scale={scale}
+        scale={requestedScale}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
         searchOpen={searchOpen}
@@ -1064,11 +1102,18 @@ export function PdfViewer({
             </div>
           )}
 
-          <div className="flex flex-col items-center gap-6">
+          <div
+            className="flex flex-col items-center gap-6"
+            style={{
+              transform: `scale(${(requestedScale / renderScale).toFixed(4)})`,
+              transformOrigin: 'top center',
+              willChange: 'transform',
+            }}
+          >
             {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
               <div
                 key={pageNum}
-                className="relative shadow-2xl"
+                className="relative shadow-2xl bg-white"
                 ref={(el) => { pageRefs.current[pageNum - 1] = el }}
               >
                 <canvas
