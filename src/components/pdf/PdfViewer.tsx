@@ -1,6 +1,10 @@
 import { useRef, useEffect, useState, useCallback, useReducer } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
+// ?url makes Vite copy the worker to dist/assets and return its file path.
+// new URL(..., import.meta.url) doesn't reliably bundle node_modules files,
+// causing the worker to 404 under Electron's file:// protocol.
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDFDocument } from 'pdf-lib'
 import { toast } from 'sonner'
 import { Search, ChevronUp, ChevronDown, X, Loader2 } from 'lucide-react'
@@ -8,10 +12,7 @@ import { PdfToolbar } from './PdfToolbar'
 import type { PdfTool } from './PdfToolbar'
 import type { PdfStroke, PdfTextBox, PdfAnnotation } from '../../types'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).href
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
 
 // ── Shape detection helpers ──────────────────────────────────────────────────
 
