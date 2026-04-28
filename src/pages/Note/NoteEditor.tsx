@@ -13,6 +13,14 @@ import { supabase } from '../../lib/supabase'
 import { cn } from '../../lib/utils'
 import type { Note, PdfAnnotation } from '../../types'
 
+type ElectronAPI = {
+  platform?: string
+  getPdfWorkerContent?: () => Promise<string | null>
+  savePdfLocal?: (noteId: string, buffer: ArrayBuffer) => Promise<boolean>
+  readPdfLocal?: (noteId: string) => Promise<Uint8Array | null>
+}
+const electronAPI = (window as unknown as { electronAPI?: ElectronAPI }).electronAPI
+
 type SaveStatus = 'idle' | 'saving' | 'saved'
 type ActiveTab = 'note' | 'pdf'
 
@@ -46,6 +54,32 @@ export function NoteEditorPage() {
   // Track blob URL so we can revoke it when replaced or on unmount
   const localBlobUrlRef = useRef<string | null>(null)
 
+  // Resolve a URL de PDF: prefere cópia local (Electron offline-first),
+  // cai para URL remota e salva localmente em background se online.
+  const resolvePdfUrl = useCallback(async (noteId: string, remoteUrl: string) => {
+    if (electronAPI?.readPdfLocal) {
+      const buffer = await electronAPI.readPdfLocal(noteId)
+      if (buffer) {
+        if (localBlobUrlRef.current) URL.revokeObjectURL(localBlobUrlRef.current)
+        const blob = new Blob([new Uint8Array(buffer)], { type: 'application/pdf' })
+        const blobUrl = URL.createObjectURL(blob)
+        localBlobUrlRef.current = blobUrl
+        setLocalPdfUrl(blobUrl)
+        return
+      }
+      // Sem cópia local: usa URL remota e salva em background se online
+      setLocalPdfUrl(remoteUrl)
+      if (navigator.onLine) {
+        fetch(remoteUrl)
+          .then((r) => r.arrayBuffer())
+          .then((buf) => electronAPI.savePdfLocal!(noteId, buf))
+          .catch(() => {})
+      }
+    } else {
+      setLocalPdfUrl(remoteUrl)
+    }
+  }, [])
+
   // Keep latest title/content in refs so the cleanup useEffect
   // doesn't capture stale closures from the empty dependency array
   const latestTitleRef = useRef(title)
@@ -78,7 +112,7 @@ export function NoteEditorPage() {
         setContent(existing.content)
         latestTitleRef.current = existing.title
         latestContentRef.current = existing.content
-        if (existing.pdf_url) setLocalPdfUrl(existing.pdf_url)
+        if (existing.pdf_url) resolvePdfUrl(id!, existing.pdf_url)
         contentInitializedRef.current = true
       }
       setIsInitialized(true)
@@ -96,12 +130,12 @@ export function NoteEditorPage() {
           setContent(fetched.content)
           latestTitleRef.current = fetched.title
           latestContentRef.current = fetched.content
-          if (fetched.pdf_url) setLocalPdfUrl(fetched.pdf_url)
+          if (fetched.pdf_url) resolvePdfUrl(id!, fetched.pdf_url)
           contentInitializedRef.current = true
           setIsInitialized(true)
         })
     }
-  }, [id, isNew, notes, navigate])
+  }, [id, isNew, notes, navigate, resolvePdfUrl])
 
   const save = useCallback(
     async (newTitle: string, newContent: Record<string, unknown>) => {
@@ -167,18 +201,29 @@ export function NoteEditorPage() {
     async (bytes: Uint8Array) => {
       if (!noteIdRef.current || !user) return
       try {
+        // Salva localmente primeiro (disponível offline)
+        if (electronAPI?.savePdfLocal) {
+          await electronAPI.savePdfLocal(noteIdRef.current, bytes.buffer as ArrayBuffer)
+        }
+
+        if (!navigator.onLine) {
+          toast.success('PDF mesclado salvo localmente')
+          return
+        }
+
         const file = new File([bytes as BlobPart], 'merged.pdf', { type: 'application/pdf' })
-        const path = `${user.id}/${noteIdRef.current}.pdf`
+        const storagePath = `${user.id}/${noteIdRef.current}.pdf`
         const { error: uploadError } = await supabase.storage
           .from('pdfs')
-          .upload(path, file, { contentType: 'application/pdf', upsert: true })
+          .upload(storagePath, file, { contentType: 'application/pdf', upsert: true })
         if (uploadError) throw uploadError
-        const { data: { publicUrl } } = supabase.storage.from('pdfs').getPublicUrl(path)
+        const { data: { publicUrl } } = supabase.storage.from('pdfs').getPublicUrl(storagePath)
         // Append cache-buster so the browser fetches fresh content after upsert
         const freshUrl = `${publicUrl}?v=${Date.now()}`
         await updateNote(noteIdRef.current, { pdf_url: freshUrl })
         setNote((prev) => (prev ? { ...prev, pdf_url: freshUrl } : null))
-        setLocalPdfUrl(freshUrl)
+        // Electron: PdfViewer já exibe via mergedBlobUrl interno; só atualiza no web
+        if (!electronAPI?.savePdfLocal) setLocalPdfUrl(freshUrl)
         toast.success('PDF mesclado salvo')
       } catch (err) {
         console.error(err)
@@ -199,7 +244,6 @@ export function NoteEditorPage() {
       return
     }
 
-    // Bug 1 fix: revoke the previous blob URL before creating a new one
     if (localBlobUrlRef.current) {
       URL.revokeObjectURL(localBlobUrlRef.current)
     }
@@ -208,6 +252,9 @@ export function NoteEditorPage() {
     localBlobUrlRef.current = blobUrl
     setLocalPdfUrl(blobUrl)
     setActiveTab('pdf')
+
+    // Lê bytes cedo para poder salvar localmente antes do upload
+    const arrayBuffer = await file.arrayBuffer()
 
     // Ensure note is created before uploading
     if (!noteIdRef.current) {
@@ -225,30 +272,51 @@ export function NoteEditorPage() {
       window.history.replaceState({}, '', `/notes/${created.id}`)
     }
 
+    const currentNoteId = noteIdRef.current!
+
+    // Salva cópia local no userData (Electron offline-first)
+    if (electronAPI?.savePdfLocal) {
+      await electronAPI.savePdfLocal(currentNoteId, arrayBuffer)
+    }
+
     setIsUploadingPdf(true)
     try {
-      const path = `${user?.id ?? 'anon'}/${noteIdRef.current}.pdf`
+      if (!navigator.onLine) {
+        toast.success('PDF salvo localmente. Sincronize quando conectar à internet.')
+        return
+      }
+
+      const storagePath = `${user?.id ?? 'anon'}/${currentNoteId}.pdf`
       const { error: uploadError } = await supabase.storage
         .from('pdfs')
-        .upload(path, file, { contentType: 'application/pdf', upsert: true })
+        .upload(storagePath, file, { contentType: 'application/pdf', upsert: true })
 
       if (uploadError) throw uploadError
 
-      const { data: { publicUrl } } = supabase.storage.from('pdfs').getPublicUrl(path)
+      const { data: { publicUrl } } = supabase.storage.from('pdfs').getPublicUrl(storagePath)
 
-      await updateNote(noteIdRef.current, { pdf_url: publicUrl })
+      await updateNote(currentNoteId, { pdf_url: publicUrl })
       setNote((prev) => (prev ? { ...prev, pdf_url: publicUrl } : null))
 
-      // Bug 1 fix: revoke blob URL now that we have the permanent URL
-      if (localBlobUrlRef.current) {
-        URL.revokeObjectURL(localBlobUrlRef.current)
-        localBlobUrlRef.current = null
+      if (electronAPI?.savePdfLocal) {
+        // Electron: mantém o blob URL local já exibido; URL do Supabase fica salva na nota
+        toast.success('PDF importado com sucesso')
+      } else {
+        // Web: troca para URL permanente do Supabase e libera memória
+        if (localBlobUrlRef.current) {
+          URL.revokeObjectURL(localBlobUrlRef.current)
+          localBlobUrlRef.current = null
+        }
+        setLocalPdfUrl(publicUrl)
+        toast.success('PDF importado com sucesso')
       }
-      setLocalPdfUrl(publicUrl)
-      toast.success('PDF importado com sucesso')
     } catch (err) {
       console.error(err)
-      toast.error('Erro ao fazer upload do PDF')
+      if (electronAPI?.savePdfLocal) {
+        toast.warning('PDF salvo localmente. Erro ao sincronizar com a nuvem.')
+      } else {
+        toast.error('Erro ao fazer upload do PDF')
+      }
     } finally {
       setIsUploadingPdf(false)
       if (pdfInputRef.current) pdfInputRef.current.value = ''
